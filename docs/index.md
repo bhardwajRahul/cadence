@@ -70,7 +70,7 @@ update, the centered-contrast check, backtracking), [private planning](planning.
 (conditional retention of chosen responses) and [experimental fixed connectivity](partitioned.md)
 (routing constraints for comparisons, not learned specialization).
 
-- [Learning in lockstep: populations on a device](population.md): the torch twin of the record patch for a population of brains in many worlds at once; what batches (instances, streams, patches) and what does not (moments); the parity tests; the measured throughput.
+- [Learning in lockstep: populations on a device](population.md): the torch twin of the record patch for a population of brains in many worlds at once; what batches (instances, streams, patches) and what does not (moments); the parity tests; the measured throughput; the kernel at the width of a game (moments folded by stream, masks, output weights, familiarity, Adam on the adjoint) and the recommended structure for training across several devices.
 
 ## Measure
 

@@ -43,3 +43,83 @@ with a store of 256 cells ran 8,192 streams at 498,000 moments per second and 16
 423,000, against 1,276 for the same patch on one processor core (390 times); the two paths
 agree on the reading to 2e-16. The tables cost `instances * streams * cells * outputs`
 values; keep stores small and brains many.
+
+## The kernel at the width of a game
+
+A population that plays a game reads wide (a hold'em seat reads 283 ports; with the
+swap, both players' actions and rewards, the readbacks of three slots and their settled
+contexts the canonical reading is 1,414 ports at 256 hidden units) and lives through
+episodes of unequal length. Six additions make that regime cheap; each keeps the parity
+tests.
+
+- The store is read and written through the active cells alone: a flat row index into the
+  table viewed as rows, `index_select` for the read, `index_add_` for the write. A settle
+  no longer touches every cell of every stream, so the store's size sets memory, not time.
+- The adjoint of the one-moment loss is written out (six matmuls) and the dense path uses
+  `matmul`; on MPS autograd through `einsum` cost four times as much.
+- `imagine(inputs, stream_of=...)` and `observe(..., stream_of=...)` take several moments
+  per stream in one call, `stream_of` naming each moment's stream as `(moments,)` or
+  `(instances, moments)`. The drive's five imagined actions settle in one launch, and every
+  queued lesson of every stream is taught in one observe (the writes of one stream land
+  against the store as it stood, the NumPy patch's `write_batch`).
+- `observe(..., mask=...)` gates the streams that have a moment to learn from: the slow
+  loss of an instance is the mean over its masked moments, only those write and move their
+  statistics, and an instance with no masked moment does not move. Hindsight learning over
+  hands of unequal length runs on it.
+- `observe(..., weight=...)` reweights the squared errors of a linear readout per output.
+  A patch that predicts a wide reading of which a few ports matter counts them by their
+  weight; a body that normalizes per block, every block a slot reads counting once, gives
+  two reward ports the weight of 283 sense ports. Without it the profit prediction a
+  drive chooses on got a four-hundredth of the repair.
+- `record_weight` (instances, outputs) damps the records of an output whose target is a
+  sample rather than a fact (a payoff), and `imagine` returns `familiarity`, how much of a
+  reading's code falls on cells the stream's store has written before: whether this brain
+  has been near this reading in this world, which a drive can read as the trust to place
+  in an imagination.
+- `optimizer = "adam"` scales the slow step by the adjoint's running moments per instance
+  and parameter, the rate then being the learning rate. In the wide regime the context is
+  small and a fixed-rate step does not lift the weights out of their initialization
+  (measured: 0.0004 of movement over 300 watched hands); Adam on the adjoint moves them.
+
+Timings on an Apple M4, 4,096 streams, an 830-port reading, 64 hidden units, 128 cells,
+8 active: an imagined reading 74 ms before these changes and 15 ms after, an observation
+with its write 213 ms and 41 ms.
+
+## Training across several devices
+
+Instances of a population are independent: nothing crosses them in a settle, a write or a
+slow step. So a population splits across devices without communication during play, and
+the recommended structure for a run larger than one device is one population per device
+with a file as the only exchange. This is the structure; it has been run on one device,
+not yet across several.
+
+1. **School one founder on one device.** One brain in as many streams as the device holds
+   (512 per instance on the M4): its slow step integrates over every stream, so the
+   streams are the data rate. Ten million watched hands took 109 minutes on the M4 and
+   produced a founder that predicts the watched player's action with 0.97 agreement. Save
+   its parameters and genes as the checkpoint every device starts from.
+2. **One population per device, from the checkpoint.** Each device holds its own
+   `PopulationPatch` objects (one per cortex slot) with its share of the brains, all
+   starting as mutated copies of the founder, each brain in its own worlds. The world's
+   tables (a game as arrays, its deals as a bank) are small and copied to every device.
+3. **The hall as the exchange.** After every generation each device writes its best
+   brains (parameters and genes) to a shared directory; the elders of the next generation
+   on every device are drawn from the union of the halls. Brains never move during a
+   generation; a few megabytes move between generations.
+4. **Common deals across devices.** Seed the deal sequences of the shared games by stream
+   index, the same on every device, so the fitness of brains on different devices is a
+   paired comparison.
+5. **Size by the stores.** Memory is `instances * streams * cells * outputs` floats per
+   slot, plus the lesson queues (`instances * streams * queue * outputs`, twice). At 1,414
+   outputs and 128 cells, 64 brains in 32 worlds cost 4.4 GB of stores; 256 brains in 64
+   worlds 35 GB; 1,000 brains in 64 worlds 139 GB. A store of 32 cells brings the
+   thousand to 43 GB on one 80 GB device; otherwise the population splits four ways.
+6. **One job per device.** Two populations on one device, or a memory cap that makes the
+   allocator page, turn minutes into hours (measured on the M4: a generation of four
+   minutes became forty).
+
+What speeds up as brains converge is the adjustment, not the settle: a settle is one
+fixed pass. To make compute follow convergence, gate the lessons by surprise (the brain
+predicted its next reading at every decision; drop the lessons whose prediction was near
+the truth before compacting the queue), so a converged brain against a familiar world
+learns for almost nothing and a novel world costs the full step.
